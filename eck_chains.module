@@ -1,0 +1,256 @@
+<?php
+/**
+ * @file
+ * Code for the Entity Construction Kit Chains feature.
+ */
+
+include_once 'eck_chains.features.inc';
+
+// /**
+//  * Implements hook_theme().
+//  */
+// function eck_chains_theme($existing, $type, $theme, $path) {
+//   $theme = array();
+//   $theme['chains'] = array(
+//     'render element' => 'content',
+//     'base hook' => 'node',
+//     'template' => 'chains',
+//     'path' => drupal_get_path('module', 'eck_chains') . '/templates',
+//    );
+//   return $theme;
+// }
+
+/**
+ * Implements hook_theme_registry_alter().
+ */
+function eck_chains_theme_registry_alter(&$theme_registry) {
+  // Defined path to the current module.
+  $module_path = drupal_get_path('module', 'eck_chains') . '/templates';
+  // Find all .tpl.php files in this module's folder recursively.
+  $template_file_objects = drupal_find_theme_templates($theme_registry, '.tpl.php', $module_path);
+  // Iterate through all found template file objects.
+  foreach ($template_file_objects as $key => $template_file_object) {
+    // If the template has not already been overridden by a theme.
+    if (!isset($theme_registry[$key]['theme path']) || !preg_match('#/themes/#', $theme_registry[$key]['theme path'])) {
+      // Alter the theme path and template elements.
+      $theme_registry[$key]['theme path'] = $module_path;
+      $theme_registry[$key] = array_merge($theme_registry[$key], $template_file_object);
+      $theme_registry[$key]['type'] = 'module';
+    }
+  }
+}
+
+// The following bugs will happen on install of this module.
+// Warning: Invalid argument supplied for foreach() in drupal_schema_field_types()
+//   (line 7176 of /var/www/ottawa3/webroot/includes/common.inc).
+// Warning: array_keys() expects parameter 1 to be array, null given in drupal_schema_fields_sql()
+//   (line 7196 of /var/www/ottawa3/webroot/includes/common.inc).
+// TODO: Fix installation process to add this possible fix to the mix: https://www.drupal.org/node/2470083
+// TODO: Update the ECK module to https://www.drupal.org/project/eck rc8
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function eck_chains_preprocess_node(&$variables) {
+  /*
+   * If Current Path ID == nid then we do this stuff
+   * Use current node to load its Display Children
+   * Use the Display to get details of:
+   *    position
+   *    view mode
+   *    list of children to render
+   * Inject into content array
+   *    #theme = section
+   *    #weight = 0 or 2
+   *      #field_position
+   *    #access = true
+   *    #label_display = "hidden"
+   *    #view_mode = per section
+   *      #field_display_view_mode
+   *    #language
+   *    #field_display_targets
+   *    #object = chain display
+   *    #items = each display target
+   *    #attributes = array('class')
+   */
+  $entities_list = _eck_chains_get_children_of_display($variables['nid'], NULL, array('depth' => 1));
+  $language = $GLOBALS['language'];
+
+  if ($entities_list) {
+    $entity_type = 'node';
+    // Let's render the bloody fields by loading the entities.
+    $weight = 0;
+
+    // TODO: Add conditions for Entity STATUS
+    // TODO: Add conditions for Entity ACCESS rights
+
+    foreach($entities_list as $item) {
+      $entity_id = $item->field_display_targets_target_id;
+      $entity = entity_load($entity_type, array($entity_id));
+      if (entity_access('view', $entity_type, $entity[$entity_id])) {
+        $entity_view = entity_view($entity_type, $entity, $item->field_display_view_mode_entity_display, $language->language);
+        if ($item->field_display_view_mode_entity_display) {
+          $entity_view[$entity_type][$entity_id]['#view_mode'] = $item->field_display_view_mode_entity_display;
+        } else {
+          $entity_view[$entity_type][$entity_id]['#view_mode'] = 'full';
+        }
+        if ($item->field_position_value == 'above') $pos = 0;
+        if ($item->field_position_value == 'below') $pos = 2;
+        $variables['content'][$item->field_position_value][$entity_id] = $entity_view[$entity_type][$entity_id];
+        $variables['content'][$item->field_position_value][$entity_id]['#weight'] = $weight++;
+        $variables['content'][$item->field_position_value]['#weight'] = $pos;
+      }
+    }
+  }
+}
+
+/**
+ * Helper function to generate the parent id of the node passed in
+ * This is collected from the source id associated with the
+ * relationship chains' target ids. Since we really only care to have one
+ * value, we only get the first result. If there are more than one parent ids
+ * being returned, we'll have to deal with that later.
+ * TODO: Build in the multi-parent (many-to-many) relationship approach.
+ *
+ * @param $id
+ * @param array $fields
+ * @param $field_alias
+ * @return mixed
+ */
+function _eck_chains_get_parent_id($id, $fields = array(), $field_alias) {
+  $query = db_select('eck_chains', 'ec');
+  $query->join('field_data_field_source', 'fs', 'ec.id = fs.entity_id');
+  $query->join('field_data_field_target', 'ft', 'ec.id = ft.entity_id');
+  $query->fields($field_alias, $fields)
+    ->condition('ft.field_target_target_id', $id, '=');
+  $result = $query->execute()->fetchAssoc();
+
+  return $result;
+}
+
+
+/**
+ * @param $pid
+ * @param array $id_list
+ * @return array
+ */
+function _eck_chains_get_parents($pid, $id_list = array()) {
+  // This is the starting point. First we build the parent
+  $query = db_select('eck_chains', 'ec');
+  $query->join('field_data_field_source', 'fs', 'ec.id = fs.entity_id');
+  $query->join('field_data_field_target', 'ft', 'ec.id = ft.entity_id');
+  $query->fields('fs', array('field_source_target_id'))
+    ->condition('ft.field_target_target_id', $pid, '=');
+  $result = $query->execute();
+  $num_of_results = $result->rowCount();
+
+  if ($num_of_results > 0) {
+    foreach ($result->fetchAssoc() as $row) {
+      if ($row != $pid) {
+        array_unshift($id_list, $row);
+        $id_list = _eck_chains_get_parents($row, $id_list);
+      }
+    }
+  }
+
+  return $id_list;
+}
+
+// TODO: Look to rebuild all this as a class structure.
+function _eck_chains_get_children_of_display($pid, $entities_list = array(), $options = array()) {
+  $sort_order = array();
+  // Check to see if we have been given a depth value. The default is
+  // -1 meaning "go till there are no more children"
+  if (empty($options) OR !isset($options['depth'])) {
+    $options += array('depth' => -1);
+  }
+
+  $path = explode('/', current_path());
+  if (is_numeric($path[1])) {
+    if ($path[1] != $pid) {
+      return FALSE;
+    }
+  }
+
+  // This query sets out to build the required content listing. We need to add to it
+  // all necessary views settings. Since we are using views to setup the draggableviews
+  // conditions. Otherwise, we need to better coordinate the control screen.
+  // My thoughts are to remove draggableviews entirely and use TableDrag.js and
+  // set it all using the fields UI API.
+
+  // TODO: Nuke dependency on views and draggableviews module.
+  // GAINS: no need to patch the module +1
+  //        one less module to have to worry about +1
+  //        increase performance and manage eck_chains via our own table +1
+  $query = db_select('eck_chains', 'ec');
+  $query->leftJoin('field_data_field_source', 'fs', 'ec.id = fs.entity_id');
+  $query->leftJoin('field_data_field_display_targets', 'fdt', 'ec.id = fdt.entity_id');
+  $query->leftJoin('field_data_field_display_view_mode', 'fdvm', 'ec.id = fdvm.entity_id');
+  $query->leftJoin('field_data_field_position', 'fp', 'ec.id = fp.entity_id');
+  $query->leftJoin('draggableviews_structure', 'ds', 'fdt.field_display_targets_target_id = ds.entity_id AND ec.uuid = ds.args');
+  $query
+    ->fields('fdt', array('field_display_targets_target_id'))
+    ->fields('fdvm', array('field_display_view_mode_entity_display'))
+    ->fields('fp', array('field_position_value'))
+    ->fields('ec', array('uuid'))
+    ->fields('ds', array('weight'))
+    ->condition('fs.field_source_target_id', $pid, '=')
+    ->condition('ec.type', 'display', '=')
+    ->orderBy('ds.weight', 'ASC')
+  ;
+  // TODO: Consider adding in the position value orderBy()
+
+  $result = $query->execute();
+  $num_of_results = $result->rowCount();
+
+  if ($num_of_results > 0) {
+    $rows = $result->fetchAllAssoc('weight');
+
+    foreach ($rows as $weight => $entity) {
+      $entity_id = $entity->field_display_targets_target_id;
+      $entities_list[] = $rows[$weight];
+      // If we have the right option, let's go a bit deeper
+      if (($options['depth'] != 1)) {
+        if ($options['depth'] > 1) $options['depth']--;
+        $entities_list = _eck_chains_get_children_of_display($entity_id, $entities_list, $options);
+      }
+    }
+  }
+
+  return $entities_list;
+}
+
+/**
+ * @param $id
+ * @return string
+ */
+function _eck_chains_get_recursive_ids($id) {
+  $id_list = _eck_chains_get_parents($id);
+
+  return implode(',', $id_list);
+}
+
+/**
+ * @param $entity
+ * @param array $options
+ * @param array $data
+ * @return string
+ */
+function _eck_chains_get_recursive_path($entity, $options = array(), $data = array()) {
+  $id_list = _eck_chains_get_parents($entity->nid);
+  foreach ($id_list as $key => $value) {
+    $node = node_load($value);
+    $language = $options['language']->language;
+    $wrapper = entity_metadata_wrapper('node', $node, array('langcode' => $language));
+    if (isset($wrapper->title_field)) {
+      $title = $wrapper->title_field->value();
+    } else {
+      $title = $wrapper->label();
+    }
+    $id_list[$key] = pathauto_cleanstring($title, array('langcode' => $language));
+  }
+
+  return implode('/', $id_list);
+}
+
+

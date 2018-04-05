@@ -1,0 +1,17 @@
+<?php
+/**
+ * @file
+ * ECK Chains's requirements, schemas, and logic for install and uninstall.
+ */
+
+/**
+ * Implements hook_requirements().
+ */
+function eck_chains_requirements($phase) {
+  $requirements = array();
+  if ($phase == 'update') {
+    // May put something here
+  }
+
+  return $requirements;
+}
